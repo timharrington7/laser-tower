@@ -95,13 +95,29 @@ int HalfDiskEffect::run(double cur_progress, unsigned long cur_time_us) {
   }
 }
 
+/* FRAMERATE ADJUSTMENT */
+
 double rotations_per_sec = 30.0;
 unsigned long rotation_time_us = 0L;
+int last_dial_position = 0;
 
 void adjust_rps(double delta) {
   rotations_per_sec += delta;
+  Serial.print("rotations per second: ");
+  Serial.println(rotations_per_sec);
   rotation_time_us = ceil((1000.0 * 1000.0) / rotations_per_sec);
 }
+
+void check_for_rps_adjustment() {
+  int dial_position = analogRead(A0);
+  if (dial_position != last_dial_position) {
+    double delta = last_dial_position - dial_position;
+    adjust_rps(delta / 100);
+    last_dial_position = dial_position;
+  }  
+}
+
+/* SHOW DEFINITIONS */
 
 const unsigned long one_sec_us = 1000L * 1000L;
 AllOnEffect all_on_3(3L * one_sec_us);
@@ -117,15 +133,29 @@ int current_show = -1;
 Show* registered_shows[] = {&show_2d, &show_3d};
 int show_cnt = sizeof(registered_shows)/sizeof(registered_shows[0]);
 
+/* SHOW SWITCHING */
+
+bool is_show_change_requested = false;
+
+/* RUN LOOP */
+
 unsigned long last_time_us;
 unsigned int loop_counter = 0;
-bool is_show_change_requested = false;
-int last_dial_position = -1;
+
+void setup() {
+  last_time_us = micros();
+  pinMode(TTL_PORT, OUTPUT);
+  adjust_rps(0); // initialize rotation_time_us
+  last_dial_position = analogRead(A0);
+  Serial.begin(9600);
+  //Serial.print("Rotation time microseconds: ");
+  //Serial.println(rotation_time_us);
+}
 
 void loop() {
-  if (loop_counter % 512 == 0) {
-    // 9 orders of magnitude less frequent than main loop
-    
+  if (loop_counter % 1024 == 0) {
+    // 10 orders of magnitude less frequent than main loop
+    check_for_rps_adjustment();
   }
   if (current_show < 0 || is_show_change_requested) {
     current_show = (current_show + 1) % show_cnt;
@@ -139,15 +169,5 @@ void loop() {
   int val = registered_shows[current_show]->run(cur_progress, cur_time_us); 
   analogWrite(TTL_PORT, val);
   loop_counter++;
-}
-
-void setup()
-{
-  last_time_us = micros();
-  pinMode(TTL_PORT, OUTPUT);
-  adjust_rps(0); // initialize rotation_time_us
-  //Serial.begin(9600);
-  //Serial.print("Rotation time microseconds: ");
-  //Serial.println(rotation_time_us);
 }
 
