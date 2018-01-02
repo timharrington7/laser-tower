@@ -1,6 +1,9 @@
 #include <math.h>
 
 const int TTL_PORT = 10;
+const bool DEBUG = true;
+
+/* CLASS SHIT */
 
 class Effect {
   protected:
@@ -25,24 +28,24 @@ bool Effect::is_finished(unsigned long current_time_us) {
   return current_time_us >= (display_time_us + start_time_us);
 }
 
-class Show {
+class Timeline {
   Effect **effects;
   int current_effect;
   int effect_cnt;
   public:
-    Show(Effect **_effects, int _effect_cnt) {
+    Timeline(Effect **_effects, int _effect_cnt) {
       effects = _effects;
       current_effect = -1;
       effect_cnt = _effect_cnt;
     };
-    ~Show() {};
+    ~Timeline() {};
     int run(double, unsigned long);
     void reset() {
       current_effect = -1;
     }
 };
 
-int Show::run(double cur_progress, unsigned long cur_time_us) {
+int Timeline::run(double cur_progress, unsigned long cur_time_us) {
   if (current_effect < 0 || effects[current_effect]->is_finished(cur_time_us)) {
     current_effect = (current_effect + 1) % effect_cnt;
     effects[current_effect]->init(cur_progress, cur_time_us);
@@ -75,7 +78,6 @@ class AllOnEffect: public Effect {
 };
 
 int AllOnEffect::run(double cur_progress, unsigned long cur_time_us) {
-  //Serial.println(cur_progress);
   return 255;
 }
 
@@ -103,8 +105,10 @@ int last_dial_position = 0;
 
 void adjust_rps(double delta) {
   rotations_per_sec += delta;
-  Serial.print("rotations per second: ");
-  Serial.println(rotations_per_sec);
+  if (DEBUG) {
+    Serial.print("rotations per second: ");
+    Serial.println(rotations_per_sec);  
+  }
   rotation_time_us = ceil((1000.0 * 1000.0) / rotations_per_sec);
 }
 
@@ -117,7 +121,7 @@ void check_for_rps_adjustment() {
   }  
 }
 
-/* SHOW DEFINITIONS */
+/* TIMELINE DEFINITIONS */
 
 const unsigned long one_sec_us = 1000L * 1000L;
 AllOnEffect all_on_3(3L * one_sec_us);
@@ -125,19 +129,19 @@ BreatheEffect breathe(13.4 * one_sec_us, 2000);
 HalfDiskEffect half_disk(10000L * one_sec_us);
 
 Effect * effects_2d[] = {&all_on_3, &breathe};
-Show show_2d(effects_2d, sizeof(effects_2d)/sizeof(effects_2d[0]));
+Timeline timeline_2d(effects_2d, sizeof(effects_2d)/sizeof(effects_2d[0]));
 Effect * effects_3d[] = {&half_disk};
-Show show_3d(effects_3d, sizeof(effects_3d)/sizeof(effects_3d[0]));
+Timeline timeline_3d(effects_3d, sizeof(effects_3d)/sizeof(effects_3d[0]));
 
-int current_show = -1;
-Show* registered_shows[] = {&show_2d, &show_3d};
-int show_cnt = sizeof(registered_shows)/sizeof(registered_shows[0]);
+int current_timeline = -1;
+Timeline* registered_timelines[] = {&timeline_2d, &timeline_3d};
+int show_cnt = sizeof(registered_timelines)/sizeof(registered_timelines[0]);
 
-/* SHOW SWITCHING */
+/* TIMELINE SWITCHING */
 
-bool is_show_change_requested = false;
+bool is_timeline_change_requested = false;
 
-/* RUN LOOP */
+/* NORMAL ARDUINO FUNCTIONS */
 
 unsigned long last_time_us;
 unsigned int loop_counter = 0;
@@ -147,9 +151,9 @@ void setup() {
   pinMode(TTL_PORT, OUTPUT);
   adjust_rps(0); // initialize rotation_time_us
   last_dial_position = analogRead(A0);
-  Serial.begin(9600);
-  //Serial.print("Rotation time microseconds: ");
-  //Serial.println(rotation_time_us);
+  if (DEBUG) {
+    Serial.begin(9600);  
+  }
 }
 
 void loop() {
@@ -157,17 +161,18 @@ void loop() {
     // 10 orders of magnitude less frequent than main loop
     check_for_rps_adjustment();
   }
-  if (current_show < 0 || is_show_change_requested) {
-    current_show = (current_show + 1) % show_cnt;
+  if (current_timeline < 0 || is_timeline_change_requested) {
+    current_timeline = (current_timeline + 1) % show_cnt;
   }
   unsigned long cur_time_us = micros();
   if (cur_time_us < last_time_us) {
-    registered_shows[current_show]->reset(); // time overflow, start show over
+    registered_timelines[current_timeline]->reset(); // time overflow, start show over
   }
   last_time_us = cur_time_us;
   double cur_progress = ((double) (cur_time_us % rotation_time_us)) / ((double) rotation_time_us);
-  int val = registered_shows[current_show]->run(cur_progress, cur_time_us); 
+  int val = registered_timelines[current_timeline]->run(cur_progress, cur_time_us); 
   analogWrite(TTL_PORT, val);
   loop_counter++;
 }
+
 
