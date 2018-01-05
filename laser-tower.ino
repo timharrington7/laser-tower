@@ -1,9 +1,11 @@
 #include <math.h>
+#include "libas.h"
 
 const int TTL_PORT = 10;
-const bool DEBUG = true;
+const int BUTTON_PORT = 2;
+const bool DEBUG = false;
 
-/* CLASS SHIT */
+/* CLASS DEFINITIONS */
 
 class Effect {
   protected:
@@ -15,7 +17,7 @@ class Effect {
     };
     ~Effect() {};
     void init(double, unsigned long );
-    virtual int run(double, unsigned long);
+    virtual int next(double, unsigned long);
     bool is_finished(unsigned long);
 };
 
@@ -28,30 +30,32 @@ bool Effect::is_finished(unsigned long current_time_us) {
   return current_time_us >= (display_time_us + start_time_us);
 }
 
-class Timeline {
+class Show {
   Effect **effects;
   int current_effect;
   int effect_cnt;
   public:
-    Timeline(Effect **_effects, int _effect_cnt) {
+    Show(Effect **_effects, int _effect_cnt) {
       effects = _effects;
       current_effect = -1;
       effect_cnt = _effect_cnt;
     };
-    ~Timeline() {};
-    int run(double, unsigned long);
+    ~Show() {};
+    int next(double, unsigned long);
     void reset() {
       current_effect = -1;
     }
 };
 
-int Timeline::run(double cur_progress, unsigned long cur_time_us) {
+int Show::next(double cur_progress, unsigned long cur_time_us) {
   if (current_effect < 0 || effects[current_effect]->is_finished(cur_time_us)) {
     current_effect = (current_effect + 1) % effect_cnt;
     effects[current_effect]->init(cur_progress, cur_time_us);
   }
-  return effects[current_effect]->run(cur_progress, cur_time_us);
+  return effects[current_effect]->next(cur_progress, cur_time_us);
 }
+
+/* EFFECT DEFINITIONS */
 
 /* 1D effects */
 
@@ -60,12 +64,12 @@ class BreatheEffect: public Effect {
     BreatheEffect(unsigned long _display_time_us, int _time_scale_factor) : Effect(_display_time_us) {
       time_scale_factor = _time_scale_factor;
     }
-    int run (double, unsigned long);
+    int next(double, unsigned long);
   private:
     int time_scale_factor;
 };
 
-int BreatheEffect::run(double cur_progress, unsigned long cur_time_us) {
+int BreatheEffect::next(double cur_progress, unsigned long cur_time_us) {
   // http://sean.voisen.org/blog/2011/10/breathing-led-with-arduino/
   double cur_time_ms = (cur_time_us - start_time_us) / 1000.0;
   return 255.0 - (exp(sin(cur_time_ms/((double) time_scale_factor)*PI)) - 0.36787944)*108.0;
@@ -74,10 +78,10 @@ int BreatheEffect::run(double cur_progress, unsigned long cur_time_us) {
 class AllOnEffect: public Effect {
   public:
     AllOnEffect(unsigned long _display_time_us) : Effect(_display_time_us) {}
-    int run(double, unsigned long);
+    int next(double, unsigned long);
 };
 
-int AllOnEffect::run(double cur_progress, unsigned long cur_time_us) {
+int AllOnEffect::next(double cur_progress, unsigned long cur_time_us) {
   return 255;
 }
 
@@ -86,10 +90,10 @@ int AllOnEffect::run(double cur_progress, unsigned long cur_time_us) {
 class HalfDiskEffect: public Effect {
   public:
     HalfDiskEffect(unsigned long _display_time_us) : Effect(_display_time_us) {}
-    int run(double, unsigned long);
+    int next(double, unsigned long);
 };
 
-int HalfDiskEffect::run(double cur_progress, unsigned long cur_time_us) {
+int HalfDiskEffect::next(double cur_progress, unsigned long cur_time_us) {
   if (cur_progress < 0.5) {
     return 255;
   } else {
@@ -116,12 +120,12 @@ void check_for_rps_adjustment() {
   int dial_position = analogRead(A0);
   if (dial_position != last_dial_position) {
     double delta = last_dial_position - dial_position;
-    adjust_rps(delta / 100);
+    adjust_rps(delta / 1000);
     last_dial_position = dial_position;
   }  
 }
 
-/* TIMELINE DEFINITIONS */
+/* SHOW DEFINITIONS */
 
 const unsigned long one_sec_us = 1000L * 1000L;
 AllOnEffect all_on_3(3L * one_sec_us);
@@ -129,30 +133,52 @@ BreatheEffect breathe(13.4 * one_sec_us, 2000);
 HalfDiskEffect half_disk(10000L * one_sec_us);
 
 Effect * effects_2d[] = {&all_on_3, &breathe};
-Timeline timeline_2d(effects_2d, sizeof(effects_2d)/sizeof(effects_2d[0]));
+Show timeline_2d(effects_2d, sizeof(effects_2d)/sizeof(effects_2d[0]));
 Effect * effects_3d[] = {&half_disk};
-Timeline timeline_3d(effects_3d, sizeof(effects_3d)/sizeof(effects_3d[0]));
+Show timeline_3d(effects_3d, sizeof(effects_3d)/sizeof(effects_3d[0]));
 
-int current_timeline = -1;
-Timeline* registered_timelines[] = {&timeline_2d, &timeline_3d};
-int show_cnt = sizeof(registered_timelines)/sizeof(registered_timelines[0]);
+int current_show = -1;
+Show* registered_shows[] = {&timeline_2d, &timeline_3d};
+int show_cnt = sizeof(registered_shows)/sizeof(registered_shows[0]);
 
-/* TIMELINE SWITCHING */
+/* SHOW FUNCTIONS */
 
-bool is_timeline_change_requested = false;
+unsigned long last_time_us;
+volatile bool is_show_change_requested = false;
+
+void start_next_show() {
+  current_show = (current_show + 1) % show_cnt;
+}
+
+void play_show(unsigned long cur_time_us) {
+  double cur_progress = ((double) (cur_time_us % rotation_time_us)) / ((double) rotation_time_us);
+  int val = registered_shows[current_show]->next(cur_progress, cur_time_us); 
+  analogWrite(TTL_PORT, val);
+}
+
+void reset_show() {
+  registered_shows[current_show]->reset();
+}
+
+void show_button_pushed() {
+  is_show_change_requested = true;
+}
 
 /* NORMAL ARDUINO FUNCTIONS */
 
-unsigned long last_time_us;
 unsigned int loop_counter = 0;
 
 void setup() {
   last_time_us = micros();
   pinMode(TTL_PORT, OUTPUT);
+  //pinMode(BUTTON_PORT, INPUT_PULLUP);
+  // FALLING for when the pin goes from high to low.
+  //attachInterrupt(digitalPinToInterrupt(BUTTON_PORT), show_button_pushed, FALLING); 
   adjust_rps(0); // initialize rotation_time_us
+  start_next_show(); // initialize show stuff
   last_dial_position = analogRead(A0);
   if (DEBUG) {
-    Serial.begin(9600);  
+    Serial.begin(9600);
   }
 }
 
@@ -160,19 +186,23 @@ void loop() {
   if (loop_counter % 1024 == 0) {
     // 10 orders of magnitude less frequent than main loop
     check_for_rps_adjustment();
-  }
-  if (current_timeline < 0 || is_timeline_change_requested) {
-    current_timeline = (current_timeline + 1) % show_cnt;
+    if (is_show_change_requested) {
+      start_next_show();
+      is_show_change_requested = false;
+    }
   }
   unsigned long cur_time_us = micros();
   if (cur_time_us < last_time_us) {
-    registered_timelines[current_timeline]->reset(); // time overflow, start show over
+    reset_show(); // time overflow, start show over
   }
   last_time_us = cur_time_us;
-  double cur_progress = ((double) (cur_time_us % rotation_time_us)) / ((double) rotation_time_us);
-  int val = registered_timelines[current_timeline]->run(cur_progress, cur_time_us); 
-  analogWrite(TTL_PORT, val);
+  play_show(cur_time_us);
   loop_counter++;
 }
 
-
+/*
+libas tracker(ClockPin, DataPin, ChipSelectPin);
+Data can be read from the device using
+int position = tracker->GetPosition();
+ */
+ 
